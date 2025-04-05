@@ -189,7 +189,7 @@ if __name__ == "__main__":
     # to be backdated so we won't bother with ordering too much. Despite that,
     # we'll still reverse the order so "older" items are published first
     posts = []
-    for entry in reversed(feed.entries[3:5]):
+    for entry in reversed(feed.entries):
         parsed_datetime = datetime.strptime(entry.published, "%a, %d %b %Y %H:%M:%S %z")
         # When bootstrapping the feed, we don't want to publish items that are too old.
         if parsed_datetime < START_TIME:
