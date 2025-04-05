@@ -127,7 +127,9 @@ def fetch_remote_rss_feed():
     if not r.ok:
         print(f"Received {r.status_code} status code from Browserless")
         sys.exit(1)
-    return feedparser.parse(r.text)
+    # Browser response comes wrapped in HTML tags so we need to strip them out
+    soup = BeautifulSoup(r.text, 'html.parser')
+    return feedparser.parse(soup.pre.text)
 
 def fetch_local_rss_feed():
     with open("example.xml", "r") as file:
