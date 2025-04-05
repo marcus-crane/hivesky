@@ -148,11 +148,6 @@ def parse_entry(entry):
 if __name__ == "__main__":
     feed = fetch_local_rss_feed()
     history = load_feed_history()
-    client = Client()
-    client.login(
-        os.environ.get("BLUESKY_USERNAME", False),
-        os.environ.get("BLUESKY_PASSWORD", False)
-    )
     # Feed items are not 100% strictly time ordered but it's possible for feeds
     # to be backdated so we won't bother with ordering too much.
     posts = []
@@ -161,21 +156,6 @@ if __name__ == "__main__":
         if post is not None and post.guid not in history:
             # We've never seen this post before so we'll fetch further data about it
             metadata = fetch_post_metadata(post)
-            # In order to avoid wasted bandwidth, as the image is always the same, we'll just upload
-            # a local copy and update it periodically.
-            with open('beehive.png', 'rb') as file:
-                img_data = file.read()
-            thumb = client.upload_blob(img_data)
-            embed_title = metadata['title'] if metadata['title'] is not None else post.title
-            embed_description = metadata['description'] if metadata['description'] is not None else 'Read more'
-            embed = models.AppBskyEmbedExternal.Main(
-                external=models.AppBskyEmbedExternal.External(
-                    title=embed_title,
-                    description=embed_description,
-                    uri=post.url,
-                    thumb=thumb.blob,
-                )
-            )
             tb = client_utils.TextBuilder()
             
             tb.text('A new ')
@@ -193,5 +173,39 @@ if __name__ == "__main__":
                 tb.text(f', Minister for {metadata["portfolios"][0]}')
             tb.text('.')
 
-            post = client.send_post(tb, embed=embed)
-            print(post)
+            embed_title = metadata['title'] if metadata['title'] is not None else post.title
+            embed_description = metadata['description'] if metadata['description'] is not None else 'Read more'
+
+            POST_TO_BLUESKY = os.environ.get('POST_TO_BLUESKY', False)
+
+            # By default, we will simply output resolved content to make debugging easier. In order to make a real
+            # post, you will need to set `POST_TO_BLUESKY=True` as an env var
+            if POST_TO_BLUESKY:
+                client = Client()
+                client.login(
+                    os.environ.get("BLUESKY_USERNAME", False),
+                    os.environ.get("BLUESKY_PASSWORD", False)
+                )
+
+                # In order to avoid wasted bandwidth, as the image is always the same, we'll just upload
+                # a local copy and update it periodically.
+                with open('beehive.png', 'rb') as file:
+                    img_data = file.read()
+                thumb = client.upload_blob(img_data)
+                embed = models.AppBskyEmbedExternal.Main(
+                    external=models.AppBskyEmbedExternal.External(
+                        title=embed_title,
+                        description=embed_description,
+                        uri=post.url,
+                        thumb=thumb.blob,
+                    )
+                )
+                post = client.send_post(tb, embed=embed)
+                print(post)
+            else:
+                print(tb.build_text())
+                print('----')
+                print(embed_title)
+                print(embed_description)
+                print(post.url)
+                print('----')
