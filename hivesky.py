@@ -182,7 +182,7 @@ def parse_entry(entry):
     return Post(entry_type, guid, url, title)
 
 if __name__ == "__main__":
-    feed = fetch_local_rss_feed()
+    feed = fetch_remote_rss_feed()
     history = load_feed_history()
     guids = retrieve_published_guids(history)
     # Feed items are not 100% strictly time ordered but it's possible for feeds
