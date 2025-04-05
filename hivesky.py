@@ -1,7 +1,8 @@
 import csv
+from datetime import datetime
 from enum import Enum
 import os
-from pprint import pprint
+import sys
 
 from atproto import Client, client_utils, models
 from bs4 import BeautifulSoup
@@ -9,6 +10,7 @@ import feedparser
 import requests
 
 BEEHIVE_FULL_RSS_FEED = "https://www.beehive.govt.nz/rss.xml"
+START_TIME = datetime.strptime("05 Apr 2025 00:00:01 +1300", "%d %b %Y %H:%M:%S %z")
 
 class PostType(Enum):
     RELEASE = 1
@@ -60,12 +62,12 @@ def scrape_url(url):
     browserless_api_token = os.environ.get("BROWSERLESS_API_TOKEN", False)
     if not browserless_api_token:
         print("Please set BROWSERLESS_API_TOKEN env var")
-        os.exit(1)
+        sys.exit(1)
 
     scrape_url = os.environ.get("BROWSERLESS_URL", False)
     if not scrape_url:
         print("Please set BROWSERLESS_URL env var")
-        os.exit(1)
+        sys.exit(1)
 
     scrape_params = {"token": browserless_api_token, "stealth": True}
 
@@ -123,7 +125,7 @@ def fetch_remote_rss_feed():
     r = scrape_url(BEEHIVE_FULL_RSS_FEED)
     if not r.ok:
         print(f"Received {r.status_code} status code from Browserless")
-        os.exit(1)
+        sys.exit(1)
     return feedparser.parse(r.text)
 
 def fetch_local_rss_feed():
@@ -134,15 +136,27 @@ def fetch_local_rss_feed():
 def load_feed_history():
     if os.path.exists("history.csv"):
         with open("history.csv") as csvfile:
-            reader = csv.DictReader(csvfile)
-            guids = []
-            for row in reader:
-                guids.append(row['guid'])
-            return guids
+            return list(csv.DictReader(csvfile))
     return []
 
-def save_feed_history():
-    pass
+def save_feed_history(history, post):
+    history.append({
+        'guid': post.guid,
+        'url': post.url
+    })
+    with open("history.csv", "w", newline="") as csvfile:
+        fieldnames = ['guid', 'url']
+        writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
+
+        writer.writeheader()
+        for row in history:
+            writer.writerow(row)
+
+def retrieve_published_guids(history):
+    guids = []
+    for row in history:
+        guids.append(row['guid'])
+    return guids
 
 def parse_entry(entry):
     url = entry.link
@@ -169,10 +183,19 @@ def parse_entry(entry):
 if __name__ == "__main__":
     feed = fetch_local_rss_feed()
     history = load_feed_history()
+    guids = retrieve_published_guids(history)
     # Feed items are not 100% strictly time ordered but it's possible for feeds
-    # to be backdated so we won't bother with ordering too much.
+    # to be backdated so we won't bother with ordering too much. Despite that,
+    # we'll still reverse the order so "older" items are published first
     posts = []
-    for entry in feed.entries:
+    for entry in reversed(feed.entries[3:]):
+        parsed_datetime = datetime.strptime(entry.published, "%a, %d %b %Y %H:%M:%S %z")
+        # When bootstrapping the feed, we don't want to publish items that are too old.
+        if parsed_datetime < START_TIME:
+            continue
+        # If post is already published, skip parsing it
+        if entry.guid in guids:
+            continue
         post = parse_entry(entry)
         if post is not None and post.guid not in history:
             # We've never seen this post before so we'll fetch further data about it
@@ -222,8 +245,13 @@ if __name__ == "__main__":
                         thumb=thumb.blob,
                     )
                 )
-                post = client.send_post(tb, embed=embed)
-                print(post)
+                try:
+                    client.send_post(tb, embed=embed)
+                    save_feed_history(history, post)
+                    print(f"Successfully posted {post.url}")
+                except Exception:
+                    # We failed to publish a post presumably so we don't want to save to history
+                    continue
             else:
                 print(tb.build_text())
                 print('----')
@@ -231,3 +259,4 @@ if __name__ == "__main__":
                 print(embed_description)
                 print(post.url)
                 print('----')
+                save_feed_history(history, post)
