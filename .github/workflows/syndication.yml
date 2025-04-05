@@ -33,6 +33,9 @@ jobs:
           BROWSERLESS_URL: ${{ secrets.BROWSERLESS_URL }}
           POST_TO_BLUESKY: True
       - name: Commit history changes
+        # Even if we crash out, we can persist our state so that the next run
+        # will catch anything that fell over
+        if: always()
         run: |
           set -eux
 

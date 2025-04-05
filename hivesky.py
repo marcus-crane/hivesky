@@ -3,6 +3,7 @@ from datetime import datetime
 from enum import Enum
 import os
 import sys
+import time
 
 from atproto import Client, client_utils, models
 from bs4 import BeautifulSoup
@@ -193,6 +194,7 @@ if __name__ == "__main__":
         # When bootstrapping the feed, we don't want to publish items that are too old.
         if parsed_datetime < START_TIME:
             print(f"Skipped {entry.link} for being older than {START_TIME}")
+            continue
         # If post is already published, skip parsing it
         if entry.guid in guids:
             print(f"Skipped {entry.link} as it has already been syndicated")
@@ -250,6 +252,9 @@ if __name__ == "__main__":
                     client.send_post(tb, embed=embed)
                     save_feed_history(history, post)
                     print(f"Successfully posted {post.url}")
+                    # If we have a bunch of new posts, we don't want to spam readers. We'll also avoid any
+                    # potential Bluesky rate limits.
+                    time.sleep(5)
                 except Exception:
                     # We failed to publish a post presumably so we don't want to save to history
                     continue
