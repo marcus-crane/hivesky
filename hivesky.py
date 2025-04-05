@@ -192,9 +192,10 @@ if __name__ == "__main__":
         parsed_datetime = datetime.strptime(entry.published, "%a, %d %b %Y %H:%M:%S %z")
         # When bootstrapping the feed, we don't want to publish items that are too old.
         if parsed_datetime < START_TIME:
-            continue
+            print(f"Skipped {post.url} for being older than {START_TIME}")
         # If post is already published, skip parsing it
         if entry.guid in guids:
+            print(f"Skipped {post.url} as it has already been syndicated")
             continue
         post = parse_entry(entry)
         if post is not None and post.guid not in history:
