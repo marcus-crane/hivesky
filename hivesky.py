@@ -16,9 +16,13 @@ class PostType(Enum):
     FEATURE = 3
 
 class Minister:
-    def __init__(self, name: str, portfolio: str):
+    def __init__(self, name: str, slug: str, portfolios: list[str] = None):
         self.name = name
-        self.portfolio = portfolio
+        self.slug = slug
+        self.portfolios = portfolios if portfolios is not None else []
+
+    def add_portfolio(self, portfolio: str):
+        self.portfolios.append(portfolio)
     
     def __str__(self):
         return f"{self.name}, Minister of {self.portfolio}"
@@ -91,11 +95,29 @@ def fetch_post_metadata(post):
     ministers = soup.find_all('div', class_='minister__title')
     for minister in ministers:
         metadata['ministers'].append(minister.text.strip())
-    portfolios = soup.find_all('div', class_='taxonomy-term--type-portfolios')
-    for portfolio in portfolios:
-        metadata['portfolios'].append(portfolio.text.strip())
-    
+    # portfolios = soup.find_all('div', class_='taxonomy-term--type-portfolios')
+    # for portfolio in portfolios:
+    #     metadata['portfolios'].append(portfolio.text.strip())
+
     return metadata
+
+def format_minister_text(ministers):
+    """
+    1 Minister: "A new release from X"
+    2 Ministers: "A new release from X and Y"
+    3+ Ministers: "A new release from X, Y and Z"
+    """
+    prefix = ' from'
+    if len(ministers) == 0:
+        return '' # shouldn't be possible normally
+    elif len(ministers) == 1:
+        return f'{prefix} {ministers[0]}'
+    elif len(ministers) == 2:
+        ministers = ' and '.join(ministers)
+        return f'{prefix} {ministers}'
+    else:
+        firstBit = ', '.join(ministers[:-1])
+        return f'{prefix} {firstBit} and {ministers[-1]}'
 
 def fetch_remote_rss_feed():
     r = scrape_url(BEEHIVE_FULL_RSS_FEED)
@@ -121,7 +143,6 @@ def load_feed_history():
 
 def save_feed_history():
     pass
-
 
 def parse_entry(entry):
     url = entry.link
@@ -151,7 +172,7 @@ if __name__ == "__main__":
     # Feed items are not 100% strictly time ordered but it's possible for feeds
     # to be backdated so we won't bother with ordering too much.
     posts = []
-    for entry in feed.entries[11:12]:
+    for entry in feed.entries:
         post = parse_entry(entry)
         if post is not None and post.guid not in history:
             # We've never seen this post before so we'll fetch further data about it
@@ -159,6 +180,8 @@ if __name__ == "__main__":
             tb = client_utils.TextBuilder()
             
             tb.text('A new ')
+            if len(metadata['ministers']) > 1:
+                tb.text('joint ')
             if post.type == PostType.RELEASE:
                 tb.text('release')
             if post.type == PostType.FEATURE:
@@ -167,10 +190,9 @@ if __name__ == "__main__":
                 tb.text('speech')
             tb.text(' is available')
             if len(metadata['ministers']):
-                tb.text(' from ')
-                tb.text(metadata['ministers'][0])
-            if len(metadata['portfolios']):
-                tb.text(f', Minister for {metadata["portfolios"][0]}')
+                tb.text(format_minister_text(metadata['ministers']))
+            # if len(metadata['portfolios']):
+            #     tb.text(f', Minister for {metadata["portfolios"][0]}')
             tb.text('.')
 
             embed_title = metadata['title'] if metadata['title'] is not None else post.title
