@@ -12,6 +12,7 @@ import requests
 
 BEEHIVE_FULL_RSS_FEED = "https://www.beehive.govt.nz/rss.xml"
 START_TIME = datetime.strptime("05 Apr 2025 00:00:01 +1300", "%d %b %Y %H:%M:%S %z")
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 
 class PostType(Enum):
     RELEASE = 1
@@ -132,13 +133,13 @@ def fetch_remote_rss_feed():
     return feedparser.parse(soup.pre.text)
 
 def fetch_local_rss_feed():
-    with open("example.xml", "r") as file:
+    with open(os.path.join(SCRIPT_DIR, "example.xml", "r")) as file:
         data = file.read()
     return feedparser.parse(data)
 
 def load_feed_history():
-    if os.path.exists("history.csv"):
-        with open("history.csv") as csvfile:
+    if os.path.exists(os.path.join(SCRIPT_DIR, "history.csv")):
+        with open(os.path.join(SCRIPT_DIR, "history.csv")) as csvfile:
             return list(csv.DictReader(csvfile))
     return []
 
@@ -147,7 +148,7 @@ def save_feed_history(history, post):
         'guid': post.guid,
         'url': post.url
     })
-    with open("history.csv", "w", newline="") as csvfile:
+    with open(os.path.join(SCRIPT_DIR, "history.csv", "w", newline="")) as csvfile:
         fieldnames = ['guid', 'url']
         writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
 
@@ -239,7 +240,7 @@ if __name__ == "__main__":
 
                 # In order to avoid wasted bandwidth, as the image is always the same, we'll just upload
                 # a local copy and update it periodically.
-                with open('beehive.png', 'rb') as file:
+                with open(os.path.join(SCRIPT_DIR, 'beehive.png', 'rb')) as file:
                     img_data = file.read()
                 thumb = client.upload_blob(img_data)
                 embed = models.AppBskyEmbedExternal.Main(
