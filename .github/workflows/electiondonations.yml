@@ -27,8 +27,8 @@ jobs:
       - name: Syndicate Beehive publications to Bluesky
         run: python electiondonations/bot.py
         env:
-          BLUESKY_USERNAME: ${{ secrets.ELECTIONDONATION_BLUESKY_USERNAME }}
-          BLUESKY_PASSWORD: ${{ secrets.ELECTIONDONATION_BLUESKY_PASSWORD }}
+          BLUESKY_USERNAME: ${{ secrets.ELECTIONDONATIONS_BLUESKY_USERNAME }}
+          BLUESKY_PASSWORD: ${{ secrets.ELECTIONDONATIONS_BLUESKY_PASSWORD }}
           BROWSERLESS_API_TOKEN: ${{ secrets.BROWSERLESS_API_TOKEN }}
           BROWSERLESS_URL: ${{ secrets.BROWSERLESS_URL }}
           POST_TO_BLUESKY: True
