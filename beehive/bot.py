@@ -240,7 +240,7 @@ if __name__ == "__main__":
 
                 # In order to avoid wasted bandwidth, as the image is always the same, we'll just upload
                 # a local copy and update it periodically.
-                with open(os.path.join(SCRIPT_DIR, 'beehive.png', 'rb')) as file:
+                with open(os.path.join(SCRIPT_DIR, 'beehive.png'), 'rb') as file:
                     img_data = file.read()
                 thumb = client.upload_blob(img_data)
                 embed = models.AppBskyEmbedExternal.Main(
