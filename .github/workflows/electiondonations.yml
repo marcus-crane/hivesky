@@ -1,7 +1,7 @@
 name: "Check for new election donations to syndicate to Bluesky"
 on:
-  # schedule:
-  # - cron: "*/9 * * * *" # Every 10 minutes
+  schedule:
+    - cron: "0 19-23,0-6 * * *" # 7am - 6pm NZST / 8am - 7pm NZDT and probably no one is posting at night
   workflow_dispatch:
 env:
   PYTHONUNBUFFERED: 1 # ensure that python scripts live output instead of buffering
