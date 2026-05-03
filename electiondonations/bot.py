@@ -1,306 +1,377 @@
 import csv
 import os
+import re
 import sys
 import time
-from datetime import datetime
-from enum import Enum
+from io import BytesIO
+from urllib.parse import urljoin
 
-import feedparser
 import requests
-from atproto import Client, client_utils, models
+from atproto import Client, models
 from bs4 import BeautifulSoup
+from PIL import Image
 
-BEEHIVE_FULL_RSS_FEED = "https://www.beehive.govt.nz/rss.xml"
-START_TIME = datetime.strptime("05 Apr 2025 00:00:01 +1300", "%d %b %Y %H:%M:%S %z")
+BSKY_BLOB_LIMIT = 1_000_000
+
+DONATIONS_URL = "https://elections.nz/democracy-in-nz/political-parties-in-new-zealand/donations-exceeding-20000"
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 
+USER_AGENT = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 
-class PostType(Enum):
-    RELEASE = 1
-    SPEECH = 2
-    FEATURE = 3
+PARTY_SITES = {
+    "ACT New Zealand": "https://www.act.org.nz",
+    "New Zealand First Party": "https://www.nzfirst.nz",
+    "The Green Party of Aotearoa New Zealand": "https://www.greens.org.nz",
+    "Te Pāti Māori": "https://www.maoriparty.org.nz",
+    "New Zealand Labour Party": "https://www.labour.org.nz",
+    "The New Zealand National Party": "https://www.national.org.nz",
+    "Opportunity Party": "https://www.opportunity.org.nz/",
+    "The Opportunities Party": "https://www.opportunity.org.nz/",
+}
 
-
-class Minister:
-    def __init__(self, name: str, slug: str, portfolios: list[str] = None):
-        self.name = name
-        self.slug = slug
-        self.portfolios = portfolios if portfolios is not None else []
-
-    def add_portfolio(self, portfolio: str):
-        self.portfolios.append(portfolio)
-
-    def __str__(self):
-        return f"{self.name}, Minister of {self.portfolio}"
-
-    def __repr__(self):
-        return self.__str__()
+# These party websites don't have og:image banners sadly
+PARTY_BANNERS = {
+    "ACT New Zealand": "https://framerusercontent.com/images/WiUfeXvLaYKyPDOWzkFn5Wm6B8.png",
+}
 
 
-class Post:
+class Donation:
     def __init__(
         self,
-        type: PostType,
-        guid: str,
-        url: str,
-        title: str,
-        ministers: list[Minister] = None,
+        party,
+        return_date,
+        donor_name,
+        amount,
+        donation_date,
+        pdf_url,
     ):
-        self.type = type
-        self.guid = guid
-        self.url = url
-        self.title = title
-        self.ministers = ministers if ministers is not None else []
-
-    def add_minister(self, minister: Minister):
-        self.ministers.append(minister)
-
-    def update_title(self, title: str):
-        self.title = title
+        self.party = party
+        self.return_date = return_date
+        self.donor_name = donor_name
+        self.amount = amount
+        self.donation_date = donation_date
+        self.pdf_url = pdf_url
 
     def __str__(self):
-        return f"{self.type}: {self.title}"
+        return f"{self.party} <- {self.amount} from {self.donor_name}"
 
     def __repr__(self):
         return self.__str__()
 
 
-def scrape_url(url):
-    # Unfortunately, RSS feeds for most government sites are behind an Imperva
-    # WAF so this is currently using a Browserless instance that I host to get
-    # around the WAF and fetch the latest RSS feed. Trying to do a request
-    # curl/requests fetch results in an Imperva response. It should be possible
-    # to run a local Browserless container but historically I haven't had any
-    # luck doing that.
-    browserless_api_token = os.environ.get("BROWSERLESS_API_TOKEN", False)
-    if not browserless_api_token:
+def fetch_page():
+    # Elections uses Imperva WAF so we need to get around that
+    token = os.environ.get("BROWSERLESS_API_TOKEN")
+    if not token:
         print("Please set BROWSERLESS_API_TOKEN env var")
         sys.exit(1)
-
-    scrape_url = os.environ.get("BROWSERLESS_URL", False)
-    if not scrape_url:
+    url = os.environ.get("BROWSERLESS_URL")
+    if not url:
         print("Please set BROWSERLESS_URL env var")
         sys.exit(1)
 
-    scrape_params = {"token": browserless_api_token, "stealth": True}
-
-    return requests.post(scrape_url, params=scrape_params, json={"url": url})
-
-
-def fetch_post_metadata(post):
-    r = scrape_url(post.url)
-    if not r.ok:
-        return False
-    soup = BeautifulSoup(r.text, "html.parser")
-    # TODO: There is more complexity to actually map ministers to their correct portfolios which will
-    # be implemented later. This will do for now.
-    metadata = {"title": None, "description": None, "ministers": [], "portfolios": []}
-
-    # Page metadata
-    title = (
-        soup.find("meta", attrs={"property": "og:title"})
-        .attrs.get("content", "")
-        .strip()
-    )
-    if title == "":
-        title = soup.find("h1", class_="article__title").text.strip()
-    metadata["title"] = title
-
-    description = (
-        soup.find("meta", attrs={"property": "og:description"})
-        .attrs.get("content", "")
-        .strip()
-    )
-    if description == "":
-        description = (
-            soup.find("meta", attrs={"name": "description"})
-            .attrs.get("content", "")
-            .strip()
-        )
-    metadata["description"] = description
-
-    # Ministers
-    ministers = soup.find_all("div", class_="minister__title")
-    for minister in ministers:
-        metadata["ministers"].append(minister.text.strip())
-    # portfolios = soup.find_all('div', class_='taxonomy-term--type-portfolios')
-    # for portfolio in portfolios:
-    #     metadata['portfolios'].append(portfolio.text.strip())
-
-    return metadata
-
-
-def format_minister_text(ministers):
-    """
-    1 Minister: "A new release from X"
-    2 Ministers: "A new release from X and Y"
-    3+ Ministers: "A new release from X, Y and Z"
-    """
-    prefix = " from"
-    if len(ministers) == 0:
-        return ""  # shouldn't be possible normally
-    elif len(ministers) == 1:
-        return f"{prefix} {ministers[0]}"
-    elif len(ministers) == 2:
-        ministers = " and ".join(ministers)
-        return f"{prefix} {ministers}"
+    # Inline the token into the URL so requests does not percent-encode it via
+    # the params= dict (which mangles tokens containing characters like + or =).
+    if "?" in url:
+        sep = "&"
     else:
-        firstBit = ", ".join(ministers[:-1])
-        return f"{prefix} {firstBit} and {ministers[-1]}"
-
-
-def fetch_remote_rss_feed():
-    r = scrape_url(BEEHIVE_FULL_RSS_FEED)
-    if not r.ok:
-        print(f"Received {r.status_code} status code from Browserless")
-        sys.exit(1)
-    # Browser response comes wrapped in HTML tags so we need to strip them out
+        sep = "?"
+    full_url = f"{url}{sep}token={token}"
+    r = requests.post(
+        full_url,
+        params={"stealth": True},
+        json={"url": DONATIONS_URL},
+        timeout=60,
+    )
+    r.raise_for_status()
+    # Browserless wraps the rendered page in an HTML envelope — strip it back
+    # out so BeautifulSoup parses the original document.
     soup = BeautifulSoup(r.text, "html.parser")
-    return feedparser.parse(soup.pre.text)
+    pre = soup.find("pre")
+    if pre:
+        return pre.get_text()
+    return r.text
 
 
-def fetch_local_rss_feed():
-    with open(os.path.join(SCRIPT_DIR, "example.xml", "r")) as file:
-        data = file.read()
-    return feedparser.parse(data)
+def cell_lines(td):
+    # Convert <br> to newlines so get_text honours them as line breaks.
+    for br in td.find_all("br"):
+        br.replace_with("\n")
+    text = td.get_text("\n").replace("\xa0", " ")
+    return [line.strip() for line in text.split("\n") if line.strip()]
 
 
-def load_feed_history():
-    if os.path.exists(os.path.join(SCRIPT_DIR, "history.csv")):
-        with open(os.path.join(SCRIPT_DIR, "history.csv")) as csvfile:
-            return list(csv.DictReader(csvfile))
-    return []
+def parse_amount(text):
+    # text looks like "$50,000, 29 April 2026" or "$100,000.00, 28 April 2026".
+    m = re.match(r"^(\$[\d,]+(?:\.\d+)?)\s*,?\s*(.*)$", text)
+    if not m:
+        return None, None
+    amount = m.group(1).rstrip(",")
+    if amount.endswith(".00"):
+        amount = amount[:-3]
+    return amount, m.group(2).strip()
 
 
-def save_feed_history(history, post):
-    history.append({"guid": post.guid, "url": post.url})
-    with open(os.path.join(SCRIPT_DIR, "history.csv", "w", newline="")) as csvfile:
-        fieldnames = ["guid", "url"]
-        writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
+def parse_donations(html):
+    soup = BeautifulSoup(html, "html.parser")
+    # The page lists one table per electoral cycle (e.g. "since 1 January 2026",
+    # "since 1 January 2023"). We only post from the most recent cycle, which is
+    # always the first heading.
+    heading = None
+    for tag in soup.find_all(["h2", "h3"]):
+        if "Party donations exceeding" in tag.get_text():
+            heading = tag
+            break
+    if heading is None:
+        print("Could not find donations heading on page")
+        sys.exit(1)
+    table = heading.find_next("table")
+    if table is None:
+        print("Could not find donations table after heading")
+        sys.exit(1)
 
+    donations = []
+    tbody = table.find("tbody")
+    if tbody is None:
+        tbody = table
+    for row in tbody.find_all("tr"):
+        cells = row.find_all("td")
+        if len(cells) < 3:
+            continue
+
+        party_lines = cell_lines(cells[0])
+        donor_lines = cell_lines(cells[1])
+        amount_lines = cell_lines(cells[2])
+        if not party_lines or not donor_lines or not amount_lines:
+            continue
+        # Header rows sometimes live inside the tbody.
+        if "name and address" in donor_lines[0].lower():
+            continue
+
+        link = cells[2].find("a", href=True)
+        if link is None:
+            continue
+        pdf_url = urljoin(DONATIONS_URL, link["href"])
+
+        amount, donation_date = parse_amount(amount_lines[0])
+        if amount is None:
+            continue
+
+        party = party_lines[0]
+        if len(party_lines) > 1:
+            return_date = party_lines[1]
+        else:
+            return_date = ""
+        donor_name = donor_lines[0]
+
+        donations.append(
+            Donation(
+                party,
+                return_date,
+                donor_name,
+                amount,
+                donation_date,
+                pdf_url,
+            )
+        )
+
+    return donations
+
+
+def load_history():
+    path = os.path.join(SCRIPT_DIR, "history.csv")
+    if not os.path.exists(path) or os.path.getsize(path) == 0:
+        return []
+    with open(path) as f:
+        return list(csv.DictReader(f))
+
+
+def save_history(history, donation):
+    history.append({"url": donation.pdf_url})
+    path = os.path.join(SCRIPT_DIR, "history.csv")
+    with open(path, "w", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=["url"])
         writer.writeheader()
         for row in history:
             writer.writerow(row)
 
 
-def retrieve_published_guids(history):
-    guids = []
-    for row in history:
-        guids.append(row["guid"])
-    return guids
+def published_urls(history):
+    return {row["url"] for row in history}
 
 
-def parse_entry(entry):
-    url = entry.link
-    # NOTE: GUIDs are shaped like https://www.beehive.govt.nz/124729 but to "visit" them, the URL
-    # is https://www.beehive.govt.nz/node/124729 which resolves into the canonical URL. Some GUIDs
-    # will appear to skip numbers. PDFs and other uploads that don't appear in the RSS feed are
-    # allocated a node number as well.
-    guid = entry.guid
-    title = entry.title.strip()
-    entry_type = None
+def party_site(party):
+    return PARTY_SITES.get(party.strip())
 
-    if "/feature/" in url:
-        entry_type = PostType.FEATURE
-    if "/release/" in url:
-        entry_type = PostType.RELEASE
-    if "/speech/" in url:
-        entry_type = PostType.SPEECH
-    if entry_type is None:
-        print("No idea what this entry is!")
+
+def fetch_og_card(url):
+    try:
+        r = requests.get(url, headers={"User-Agent": USER_AGENT}, timeout=30)
+        r.raise_for_status()
+    except requests.RequestException as e:
+        print(f"Failed to fetch OG card for {url}: {e}")
         return None
 
-    return Post(entry_type, guid, url, title)
+    soup = BeautifulSoup(r.text, "html.parser")
+
+    def meta(prop, attr="property"):
+        tag = soup.find("meta", attrs={attr: prop})
+        if not tag:
+            return ""
+        content = tag.get("content")
+        if not content:
+            return ""
+        return content.strip()
+
+    title = meta("og:title")
+    if not title:
+        title_tag = soup.find("title")
+        if title_tag:
+            title = title_tag.get_text().strip()
+
+    description = meta("og:description")
+    if not description:
+        description = meta("description", attr="name")
+
+    image = meta("og:image")
+    if image:
+        image = urljoin(url, image)
+
+    return {"title": title, "description": description, "image": image}
+
+
+def fetch_image_bytes(url):
+    try:
+        r = requests.get(url, headers={"User-Agent": USER_AGENT}, timeout=30)
+        r.raise_for_status()
+        return r.content
+    except requests.RequestException as e:
+        print(f"Failed to fetch image {url}: {e}")
+        return None
+
+
+def fit_thumb(img_bytes):
+    # Bluesky rejects embed thumbs over 1MB. Re-encode as progressively smaller
+    # JPEGs until it fits, or give up (caller drops the thumb).
+    if len(img_bytes) <= BSKY_BLOB_LIMIT:
+        return img_bytes
+    try:
+        img = Image.open(BytesIO(img_bytes))
+    except Exception as e:
+        print(f"Could not open image for resizing: {e}")
+        return None
+    if img.mode != "RGB":
+        img = img.convert("RGB")
+    for max_dim, quality in [(1600, 85), (1200, 80), (1000, 75), (800, 70), (600, 65)]:
+        copy = img.copy()
+        copy.thumbnail((max_dim, max_dim))
+        buf = BytesIO()
+        copy.save(buf, format="JPEG", quality=quality, optimize=True)
+        data = buf.getvalue()
+        if len(data) <= BSKY_BLOB_LIMIT:
+            return data
+    print("Could not shrink image below Bluesky blob limit")
+    return None
+
+
+def build_post_text(donation):
+    text = f"{donation.party} received a {donation.amount} donation from {donation.donor_name}"
+    if donation.donation_date:
+        text += f" on {donation.donation_date}"
+    text += "."
+    return text
 
 
 if __name__ == "__main__":
-    feed = fetch_remote_rss_feed()
-    history = load_feed_history()
-    guids = retrieve_published_guids(history)
-    # Feed items are not 100% strictly time ordered but it's possible for feeds
-    # to be backdated so we won't bother with ordering too much. Despite that,
-    # we'll still reverse the order so "older" items are published first
-    posts = []
-    for entry in reversed(feed.entries):
-        parsed_datetime = datetime.strptime(entry.published, "%a, %d %b %Y %H:%M:%S %z")
-        # When bootstrapping the feed, we don't want to publish items that are too old.
-        if parsed_datetime < START_TIME:
-            print(f"Skipped {entry.link} for being older than {START_TIME}")
+    html = fetch_page()
+    donations = parse_donations(html)
+    history = load_history()
+    seen = published_urls(history)
+
+    # Reverse so oldest donations get posted first when bootstrapping or
+    # catching up after an outage.
+    donations = list(reversed(donations))
+
+    post_to_bluesky = os.environ.get("POST_TO_BLUESKY", False)
+    client = None
+    if post_to_bluesky:
+        client = Client()
+        client.login(
+            os.environ.get("BLUESKY_USERNAME", False),
+            os.environ.get("BLUESKY_PASSWORD", False),
+        )
+
+    # Cache OG cards across the run so we hit each party homepage at most once.
+    og_cache = {}
+
+    for donation in donations:
+        if donation.pdf_url in seen:
+            print(f"Skipped {donation.pdf_url} as already syndicated")
             continue
-        # If post is already published, skip parsing it
-        if entry.guid in guids:
-            print(f"Skipped {entry.link} as it has already been syndicated")
-            continue
-        post = parse_entry(entry)
-        if post is not None and post.guid not in history:
-            # We've never seen this post before so we'll fetch further data about it
-            metadata = fetch_post_metadata(post)
-            tb = client_utils.TextBuilder()
 
-            tb.text("A new ")
-            if len(metadata["ministers"]) > 1:
-                tb.text("joint ")
-            if post.type == PostType.RELEASE:
-                tb.text("release")
-            if post.type == PostType.FEATURE:
-                tb.text("feature")
-            if post.type == PostType.SPEECH:
-                tb.text("speech")
-            tb.text(" is available")
-            if len(metadata["ministers"]):
-                tb.text(format_minister_text(metadata["ministers"]))
-            # if len(metadata['portfolios']):
-            #     tb.text(f', Minister for {metadata["portfolios"][0]}')
-            tb.text(".")
+        text = build_post_text(donation)
+        site = party_site(donation.party)
+        og = None
+        if site:
+            if site not in og_cache:
+                og_cache[site] = fetch_og_card(site)
+            og = og_cache[site]
 
-            embed_title = (
-                metadata["title"] if metadata["title"] is not None else post.title
-            )
-            embed_description = (
-                metadata["description"]
-                if metadata["description"] is not None
-                else "Read more"
-            )
+        embed = None
+        embed_title = None
+        embed_description = None
+        embed_image_url = None
+        if og:
+            embed_title = og["title"]
+            embed_description = og["description"]
 
-            POST_TO_BLUESKY = os.environ.get("POST_TO_BLUESKY", False)
+            embed_image_url = og["image"]
+            if not embed_image_url:
+                banner = PARTY_BANNERS.get(donation.party.strip())
+                if banner:
+                    embed_image_url = banner
 
-            # By default, we will simply output resolved content to make debugging easier. In order to make a real
-            # post, you will need to set `POST_TO_BLUESKY=True` as an env var
-            if POST_TO_BLUESKY:
-                client = Client()
-                client.login(
-                    os.environ.get("BLUESKY_USERNAME", False),
-                    os.environ.get("BLUESKY_PASSWORD", False),
-                )
-
-                # In order to avoid wasted bandwidth, as the image is always the same, we'll just upload
-                # a local copy and update it periodically.
-                with open(os.path.join(SCRIPT_DIR, "beehive.png", "rb")) as file:
-                    img_data = file.read()
-                thumb = client.upload_blob(img_data)
+            if post_to_bluesky and embed_image_url:
+                thumb = None
+                img_data = fetch_image_bytes(embed_image_url)
+                if img_data:
+                    img_data = fit_thumb(img_data)
+                if img_data:
+                    thumb = client.upload_blob(img_data).blob
                 embed = models.AppBskyEmbedExternal.Main(
                     external=models.AppBskyEmbedExternal.External(
                         title=embed_title,
                         description=embed_description,
-                        uri=post.url,
-                        thumb=thumb.blob,
+                        uri=site,
+                        thumb=thumb,
                     )
                 )
-                try:
-                    client.send_post(tb, embed=embed)
-                    save_feed_history(history, post)
-                    print(f"Successfully posted {post.url}")
-                    # If we have a bunch of new posts, we don't want to spam readers. We'll also avoid any
-                    # potential Bluesky rate limits.
-                    time.sleep(5)
-                except Exception:
-                    # We failed to publish a post presumably so we don't want to save to history
-                    continue
-            else:
-                print(tb.build_text())
-                print("----")
+
+        if post_to_bluesky:
+            try:
+                if embed:
+                    client.send_post(text, embed=embed)
+                else:
+                    client.send_post(text)
+                save_history(history, donation)
+                print(f"Successfully posted {donation.pdf_url}")
+                # Avoid spamming followers and any Bluesky rate limits.
+                time.sleep(5)
+            except Exception as e:
+                print(f"Failed to post {donation.pdf_url}: {e}")
+                continue
+        else:
+            print(text)
+            print("----")
+            if og:
                 print(embed_title)
                 print(embed_description)
-                print(post.url)
-                print("----")
-                save_feed_history(history, post)
+                print(site)
+                if embed_image_url:
+                    print(f"Thumb: {embed_image_url}")
+                else:
+                    print("Thumb: (none)")
+            else:
+                print("(no embed)")
+            print("----")
+            save_history(history, donation)

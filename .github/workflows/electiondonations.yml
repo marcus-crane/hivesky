@@ -27,11 +27,11 @@ jobs:
       - name: Syndicate Beehive publications to Bluesky
         run: python electiondonations/bot.py
         env:
-          BLUESKY_USERNAME: ${{ secrets.BLUESKY_USERNAME }}
-          BLUESKY_PASSWORD: ${{ secrets.BLUESKY_PASSWORD }}
+          BLUESKY_USERNAME: ${{ secrets.ELECTIONDONATION_BLUESKY_USERNAME }}
+          BLUESKY_PASSWORD: ${{ secrets.ELECTIONDONATION_BLUESKY_PASSWORD }}
           BROWSERLESS_API_TOKEN: ${{ secrets.BROWSERLESS_API_TOKEN }}
           BROWSERLESS_URL: ${{ secrets.BROWSERLESS_URL }}
-          POST_TO_BLUESKY: False
+          POST_TO_BLUESKY: True
       - name: Commit history changes
         # Even if we crash out, we can persist our state so that the next run
         # will catch anything that fell over
