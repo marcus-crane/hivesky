@@ -133,7 +133,7 @@ def fetch_remote_rss_feed():
     return feedparser.parse(soup.pre.text)
 
 def fetch_local_rss_feed():
-    with open(os.path.join(SCRIPT_DIR, "example.xml", "r")) as file:
+    with open(os.path.join(SCRIPT_DIR, "example.xml"), "r") as file:
         data = file.read()
     return feedparser.parse(data)
 
@@ -148,7 +148,7 @@ def save_feed_history(history, post):
         'guid': post.guid,
         'url': post.url
     })
-    with open(os.path.join(SCRIPT_DIR, "history.csv", "w", newline="")) as csvfile:
+    with open(os.path.join(SCRIPT_DIR, "history.csv"), "w", newline="") as csvfile:
         fieldnames = ['guid', 'url']
         writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
 
@@ -203,7 +203,7 @@ if __name__ == "__main__":
             print(f"Skipped {entry.link} as it has already been syndicated")
             continue
         post = parse_entry(entry)
-        if post is not None and post.guid not in history:
+        if post is not None:
             # We've never seen this post before so we'll fetch further data about it
             metadata = fetch_post_metadata(post)
             tb = client_utils.TextBuilder()
@@ -258,8 +258,9 @@ if __name__ == "__main__":
                     # If we have a bunch of new posts, we don't want to spam readers. We'll also avoid any
                     # potential Bluesky rate limits.
                     time.sleep(5)
-                except Exception:
+                except Exception as e:
                     # We failed to publish a post presumably so we don't want to save to history
+                    print(f"Failed to post {post.url}: {e}")
                     continue
             else:
                 print(tb.build_text())
