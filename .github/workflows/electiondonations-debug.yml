@@ -1,0 +1,27 @@
+name: "Election donations debug"
+on:
+  workflow_dispatch:
+
+jobs:
+  debug:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install Python dependencies
+        run: pip install -r requirements.txt
+      - name: Fetch OG card for opportunity.org.nz via Browserless
+        run: |
+          python - <<'PY'
+          from electiondonations.bot import fetch_og_card
+
+          card = fetch_og_card("https://www.opportunity.org.nz/")
+          print(card)
+          PY
+        env:
+          BROWSERLESS_API_TOKEN: ${{ secrets.BROWSERLESS_API_TOKEN }}
+          BROWSERLESS_URL: ${{ secrets.BROWSERLESS_URL }}

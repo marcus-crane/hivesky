@@ -59,8 +59,9 @@ class Donation:
         return self.__str__()
 
 
-def fetch_page():
-    # Elections uses Imperva WAF so we need to get around that
+def browserless_fetch(target_url, timeout=60):
+    # Elections uses Imperva WAF and some party websites probably dislike
+    # seeing requests from Github's IP addresses too (NationBuilder probably)
     token = os.environ.get("BROWSERLESS_API_TOKEN")
     if not token:
         print("Please set BROWSERLESS_API_TOKEN env var")
@@ -80,8 +81,8 @@ def fetch_page():
     r = requests.post(
         full_url,
         params={"stealth": True},
-        json={"url": DONATIONS_URL},
-        timeout=60,
+        json={"url": target_url},
+        timeout=timeout,
     )
     r.raise_for_status()
     # Browserless wraps the rendered page in an HTML envelope — strip it back
@@ -91,6 +92,10 @@ def fetch_page():
     if pre:
         return pre.get_text()
     return r.text
+
+
+def fetch_page():
+    return browserless_fetch(DONATIONS_URL)
 
 
 def cell_lines(td):
@@ -206,13 +211,12 @@ def party_site(party):
 
 def fetch_og_card(url):
     try:
-        r = requests.get(url, headers={"User-Agent": USER_AGENT}, timeout=30)
-        r.raise_for_status()
+        html = browserless_fetch(url)
     except requests.RequestException as e:
         print(f"Failed to fetch OG card for {url}: {e}")
         return None
 
-    soup = BeautifulSoup(r.text, "html.parser")
+    soup = BeautifulSoup(html, "html.parser")
 
     def meta(prop, attr="property"):
         tag = soup.find("meta", attrs={attr: prop})
