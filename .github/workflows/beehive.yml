@@ -33,7 +33,7 @@ jobs:
       - name: Wait for Browserless
         run: |
           for i in {1..30}; do
-            if curl -sf "http://localhost:3000/sysinfo?token=${{ secrets.BROWSERLESS_API_TOKEN }}" > /dev/null; then
+            if curl -sf "http://localhost:3000/active?token=${{ secrets.BROWSERLESS_API_TOKEN }}" > /dev/null; then
               echo "Browserless ready after ${i} attempt(s)"
               exit 0
             fi
