@@ -12,6 +12,14 @@ jobs:
     timeout-minutes: 5
     runs-on: ubuntu-latest
 
+    services:
+      browserless:
+        image: ghcr.io/browserless/chromium:latest
+        ports:
+          - 3000:3000
+        env:
+          TOKEN: ${{ secrets.BROWSERLESS_API_TOKEN }}
+
     permissions:
       contents: write
 
@@ -24,13 +32,24 @@ jobs:
           python-version: "3.11"
       - name: Install Python dependencies
         run: pip install -r requirements.txt
+      - name: Wait for Browserless
+        run: |
+          for i in {1..30}; do
+            if curl -sf "http://localhost:3000/active?token=${{ secrets.BROWSERLESS_API_TOKEN }}" > /dev/null; then
+              echo "Browserless ready after ${i} attempt(s)"
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "Browserless did not become ready in time"
+          exit 1
       - name: Syndicate Beehive publications to Bluesky
         run: python electiondonations/bot.py
         env:
           BLUESKY_USERNAME: ${{ secrets.ELECTIONDONATIONS_BLUESKY_USERNAME }}
           BLUESKY_PASSWORD: ${{ secrets.ELECTIONDONATIONS_BLUESKY_PASSWORD }}
           BROWSERLESS_API_TOKEN: ${{ secrets.BROWSERLESS_API_TOKEN }}
-          BROWSERLESS_URL: ${{ secrets.BROWSERLESS_URL }}
+          BROWSERLESS_URL: http://localhost:3000/content
           POST_TO_BLUESKY: True
       - name: Commit history changes
         # Even if we crash out, we can persist our state so that the next run
