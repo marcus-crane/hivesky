@@ -209,39 +209,21 @@ def party_site(party):
     return PARTY_SITES.get(party.strip())
 
 
-def fetch_og_card(url):
+def fetch_og_image(url):
     try:
         html = browserless_fetch(url)
     except requests.RequestException as e:
-        print(f"Failed to fetch OG card for {url}: {e}")
+        print(f"Failed to fetch OG image for {url}: {e}")
         return None
 
     soup = BeautifulSoup(html, "html.parser")
-
-    def meta(prop, attr="property"):
-        tag = soup.find("meta", attrs={attr: prop})
-        if not tag:
-            return ""
-        content = tag.get("content")
-        if not content:
-            return ""
-        return content.strip()
-
-    title = meta("og:title")
-    if not title:
-        title_tag = soup.find("title")
-        if title_tag:
-            title = title_tag.get_text().strip()
-
-    description = meta("og:description")
-    if not description:
-        description = meta("description", attr="name")
-
-    image = meta("og:image")
-    if image:
-        image = urljoin(url, image)
-
-    return {"title": title, "description": description, "image": image}
+    tag = soup.find("meta", attrs={"property": "og:image"})
+    if not tag:
+        return None
+    content = tag.get("content")
+    if not content:
+        return None
+    return urljoin(url, content.strip())
 
 
 def fetch_image_bytes(url):
@@ -283,7 +265,36 @@ def build_post_text(donation):
     if donation.donation_date:
         text += f" on {donation.donation_date}"
     text += "."
+    if donation.return_date:
+        text += f" The filing was received by the Electoral Commission on {donation.return_date}."
     return text
+
+
+def build_footer_facets(text, donation):
+    # Append "[ source | filing ]" with source linking to the Elections page and
+    # filing linking to the donation PDF. Bluesky facets use UTF-8 byte offsets.
+    footer = "\n\n[ source | filing ]"
+    base = text + "\n\n[ "
+    source_start = len(base.encode("utf-8"))
+    source_end = source_start + len("source".encode("utf-8"))
+    filing_start = source_end + len(" | ".encode("utf-8"))
+    filing_end = filing_start + len("filing".encode("utf-8"))
+
+    facets = [
+        models.AppBskyRichtextFacet.Main(
+            index=models.AppBskyRichtextFacet.ByteSlice(
+                byte_start=source_start, byte_end=source_end
+            ),
+            features=[models.AppBskyRichtextFacet.Link(uri=DONATIONS_URL)],
+        ),
+        models.AppBskyRichtextFacet.Main(
+            index=models.AppBskyRichtextFacet.ByteSlice(
+                byte_start=filing_start, byte_end=filing_end
+            ),
+            features=[models.AppBskyRichtextFacet.Link(uri=donation.pdf_url)],
+        ),
+    ]
+    return text + footer, facets
 
 
 if __name__ == "__main__":
@@ -305,7 +316,8 @@ if __name__ == "__main__":
             os.environ.get("BLUESKY_PASSWORD", False),
         )
 
-    # Cache OG cards across the run so we hit each party homepage at most once.
+    # Cache og:image lookups across the run so we hit each party homepage at
+    # most once.
     og_cache = {}
 
     for donation in donations:
@@ -314,49 +326,51 @@ if __name__ == "__main__":
             continue
 
         text = build_post_text(donation)
+        text, facets = build_footer_facets(text, donation)
         site = party_site(donation.party)
-        og = None
+
+        embed_image_url = None
         if site:
             if site not in og_cache:
-                og_cache[site] = fetch_og_card(site)
-            og = og_cache[site]
+                og_cache[site] = fetch_og_image(site)
+            embed_image_url = og_cache[site]
+        if not embed_image_url:
+            embed_image_url = PARTY_BANNERS.get(donation.party.strip())
+
+        alt_text = f"The social banner associated with the party website for {donation.party}"
 
         embed = None
-        embed_title = None
-        embed_description = None
-        embed_image_url = None
-        if og:
-            embed_title = og["title"]
-            embed_description = og["description"]
-
-            embed_image_url = og["image"]
-            if not embed_image_url:
-                banner = PARTY_BANNERS.get(donation.party.strip())
-                if banner:
-                    embed_image_url = banner
-
-            if post_to_bluesky and embed_image_url:
-                thumb = None
-                img_data = fetch_image_bytes(embed_image_url)
-                if img_data:
-                    img_data = fit_thumb(img_data)
-                if img_data:
-                    thumb = client.upload_blob(img_data).blob
-                embed = models.AppBskyEmbedExternal.Main(
-                    external=models.AppBskyEmbedExternal.External(
-                        title=embed_title,
-                        description=embed_description,
-                        uri=site,
-                        thumb=thumb,
-                    )
+        if post_to_bluesky and embed_image_url:
+            img_data = fetch_image_bytes(embed_image_url)
+            if img_data:
+                img_data = fit_thumb(img_data)
+            if img_data:
+                # Tell Bluesky the image's true aspect ratio so it doesn't
+                # letterbox banners into the default tall slot.
+                try:
+                    with Image.open(BytesIO(img_data)) as probe:
+                        aspect = models.AppBskyEmbedDefs.AspectRatio(
+                            width=probe.width, height=probe.height
+                        )
+                except Exception:
+                    aspect = None
+                blob = client.upload_blob(img_data).blob
+                embed = models.AppBskyEmbedImages.Main(
+                    images=[
+                        models.AppBskyEmbedImages.Image(
+                            image=blob,
+                            alt=alt_text,
+                            aspect_ratio=aspect,
+                        )
+                    ]
                 )
 
         if post_to_bluesky:
             try:
                 if embed:
-                    client.send_post(text, embed=embed)
+                    client.send_post(text, embed=embed, facets=facets)
                 else:
-                    client.send_post(text)
+                    client.send_post(text, facets=facets)
                 save_history(history, donation)
                 print(f"Successfully posted {donation.pdf_url}")
                 # Avoid spamming followers and any Bluesky rate limits.
@@ -367,14 +381,9 @@ if __name__ == "__main__":
         else:
             print(text)
             print("----")
-            if og:
-                print(embed_title)
-                print(embed_description)
-                print(site)
-                if embed_image_url:
-                    print(f"Thumb: {embed_image_url}")
-                else:
-                    print("Thumb: (none)")
+            if embed_image_url:
+                print(f"Image: {embed_image_url}")
+                print(f"Alt: {alt_text}")
             else:
                 print("(no embed)")
             print("----")
