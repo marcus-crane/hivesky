@@ -13,6 +13,7 @@ import requests
 BEEHIVE_FULL_RSS_FEED = "https://www.beehive.govt.nz/rss.xml"
 START_TIME = datetime.strptime("05 Apr 2025 00:00:01 +1300", "%d %b %Y %H:%M:%S %z")
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+POST_LIMIT = int(os.environ.get("POST_LIMIT", 3))
 
 class PostType(Enum):
     RELEASE = 1
@@ -188,11 +189,15 @@ if __name__ == "__main__":
     feed = fetch_remote_rss_feed()
     history = load_feed_history()
     guids = retrieve_published_guids(history)
+    posts_published = 0
     # Feed items are not 100% strictly time ordered but it's possible for feeds
     # to be backdated so we won't bother with ordering too much. Despite that,
     # we'll still reverse the order so "older" items are published first
     posts = []
     for entry in reversed(feed.entries):
+        if posts_published >= POST_LIMIT:
+            print(f"Reached post limit of {POST_LIMIT}, stopping")
+            break
         parsed_datetime = datetime.strptime(entry.published, "%a, %d %b %Y %H:%M:%S %z")
         # When bootstrapping the feed, we don't want to publish items that are too old.
         if parsed_datetime < START_TIME:
@@ -254,6 +259,7 @@ if __name__ == "__main__":
                 try:
                     client.send_post(tb, embed=embed)
                     save_feed_history(history, post)
+                    posts_published += 1
                     print(f"Successfully posted {post.url}")
                     # If we have a bunch of new posts, we don't want to spam readers. We'll also avoid any
                     # potential Bluesky rate limits.
@@ -270,3 +276,4 @@ if __name__ == "__main__":
                 print(post.url)
                 print('----')
                 save_feed_history(history, post)
+                posts_published += 1

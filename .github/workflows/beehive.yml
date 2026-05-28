@@ -1,7 +1,7 @@
 name: "Check for new Beehive releases to syndicate to Bluesky"
 on:
-  # schedule:
-  #   - cron: "*/9 * * * *" # Every 9 minutes but give or take some jitter
+  schedule:
+    - cron: "*/15 * * * *" # Every 15 minutes for Budget 2026
   workflow_dispatch:
 env:
   PYTHONUNBUFFERED: 1
@@ -50,6 +50,7 @@ jobs:
           BLUESKY_PASSWORD: ${{ secrets.BLUESKY_PASSWORD }}
           BROWSERLESS_API_TOKEN: ${{ secrets.BROWSERLESS_API_TOKEN }}
           BROWSERLESS_URL: http://localhost:3000/content
+          POST_LIMIT: 1 # Slow mode for Budget 2026
           POST_TO_BLUESKY: True
       - name: Commit history changes
         if: always()
