@@ -14,6 +14,8 @@ httpcore==1.0.7
 httpx==0.28.1
 idna==3.10
 libipld==3.0.1
+lxml==6.1.1
+lxml_html_clean==0.4.5
 pendulum==3.2.0
 pillow==12.2.0
 pycparser==2.22
