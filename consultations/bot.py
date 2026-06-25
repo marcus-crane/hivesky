@@ -15,7 +15,7 @@ import requests
 BSKY_BLOB_LIMIT = 1_000_000
 USER_AGENT = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 
-STATE_FILE = Path("consultations.csv")
+STATE_FILE = Path(__file__).parent / "consultations.csv"
 
 FIELDS = [
     'link',
