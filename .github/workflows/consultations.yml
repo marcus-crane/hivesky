@@ -46,11 +46,10 @@ jobs:
       - name: Syndicate consultations to Bluesky
         run: python consultations/bot.py
         env:
-          BLUESKY_USERNAME: ${{ secrets.CONSULTATION_BLUESKY_USERNAME }}
-          BLUESKY_PASSWORD: ${{ secrets.CONSULTATION_BLUESKY_PASSWORD }}
+          BLUESKY_USERNAME: ${{ secrets.CONSULTATIONS_BLUESKY_USERNAME }}
+          BLUESKY_PASSWORD: ${{ secrets.CONSULTATIONS_BLUESKY_PASSWORD }}
           BROWSERLESS_API_TOKEN: ${{ secrets.BROWSERLESS_API_TOKEN }}
           BROWSERLESS_URL: http://localhost:3000/content
-          POST_LIMIT: 1 # Slow mode for Budget 2026
           POST_TO_BLUESKY: True
       - name: Commit history changes
         if: always()
