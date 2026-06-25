@@ -1,7 +1,7 @@
 name: "Check for new consultations to syndicate to Bluesky"
 on:
   schedule:
-    - cron: "*/15 * * * *" # Every 15 minutes for Budget 2026
+    - cron: "0 21,5 * * *" # 9am & 5pm NZST (10am & 6pm during NZDT)
   workflow_dispatch:
 env:
   PYTHONUNBUFFERED: 1
@@ -65,4 +65,12 @@ jobs:
 
           git add .
           git commit -m "New consultations have been syndicated"
-          git push
+
+          # Other syndication workflows push to main too, so rebase onto any
+          # concurrent commits and retry rather than failing on a race.
+          for i in 1 2 3 4 5; do
+            git pull --rebase --autostash && git push && exit 0
+            sleep $((RANDOM % 5 + 1))
+          done
+          echo "push failed after retries" >&2
+          exit 1
