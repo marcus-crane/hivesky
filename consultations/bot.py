@@ -105,10 +105,11 @@ def fetch_image_bytes(url):
         return None
 
 def fit_thumb(img_bytes):
-    # Bluesky rejects embed thumbs over 1MB. Re-encode as progressively smaller
-    # JPEGs until it fits, or give up (caller drops the thumb).
-    if len(img_bytes) <= BSKY_BLOB_LIMIT:
-        return img_bytes
+    # Always re-encode through PIL to a clean JPEG. Two reasons: Bluesky rejects
+    # embed thumbs over 1MB, and uploading the original bytes makes the PDS record
+    # the blob mimeType as "*/*" (atproto uploads with input_encoding "*/*" and the
+    # server can't always sniff it), which the AppView then rejects on send_post.
+    # Re-encoding guarantees the bytes really are image/jpeg.
     try:
         img = Image.open(BytesIO(img_bytes))
     except Exception as e:
@@ -135,6 +136,8 @@ def build_link_embed(client, href, title, description, image_url):
             img_data = fit_thumb(img_data)
         if img_data:
             thumb = client.upload_blob(img_data).blob
+            # fit_thumb always emits JPEG; the PDS sometimes records "*/*" anyway.
+            thumb.mime_type = "image/jpeg"
     return models.AppBskyEmbedExternal.Main(
         external=models.AppBskyEmbedExternal.External(
             uri=href,
