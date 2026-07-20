@@ -41,7 +41,7 @@ if STATE_FILE.exists():
 def as_bool(v):
     return str(v).strip().lower() == "true"
 
-def browserless_fetch(target_url, timeout=60):
+def browserless_fetch(target_url, timeout=60, wait_fn=None):
     # Elections uses Imperva WAF and some party websites probably dislike
     # seeing requests from Github's IP addresses too (NationBuilder probably)
     token = os.environ.get("BROWSERLESS_API_TOKEN")
@@ -60,10 +60,15 @@ def browserless_fetch(target_url, timeout=60):
     else:
         sep = "?"
     full_url = f"{url}{sep}token={token}"
+    payload = {"url": target_url}
+    if wait_fn:
+        # If we fetch results too early, we end up seeing a "Loading..." page
+        payload["gotoOptions"] = {"waitUntil": "networkidle2", "timeout": 30000}
+        payload["waitForFunction"] = {"fn": wait_fn, "timeout": 20000}
     r = requests.post(
         full_url,
         params={"stealth": True},
-        json={"url": target_url},
+        json=payload,
         timeout=timeout,
     )
     r.raise_for_status()
@@ -158,13 +163,8 @@ def parse_date_ranges(date):
         parsed_start = pendulum.from_format(f"{start_str} {parsed_end.year}", "D MMM YYYY", tz="Pacific/Auckland")
     return parsed_start, parsed_end
 
-# Each scraper returns a list of consultation dicts with these keys:
-#   link, title, agencies, start (pendulum or None), end (pendulum), open (bool)
-# The shared loop below handles state, notifications and posting for all of them.
-
 def scrape_govtnz():
-    # Central government aggregator — links out to individual agency pages and
-    # carries each consultation's own agency, status and start-to-end date range.
+    # NOTE: MPI consultations do not include those tagged as fisheries
     html = browserless_fetch("https://www.govt.nz/browse/engaging-with-government/consultations-have-your-say/consultations-listing/")
     soup = BeautifulSoup(html, features="lxml")
     out = []
@@ -181,16 +181,14 @@ def scrape_govtnz():
     return out
 
 def parse_mbie_due(text):
-    # "Submissions due: 31 July 2026, 5pm" — MBIE only publishes the close date.
+    # "Submissions due: 31 July 2026, 5pm". Unfortunately MBIE only publishes close dates
+    # but we don't really need to know that.
     match = re.search(r"(\d{1,2}\s+[A-Za-z]+\s+\d{4})", text)
     if not match:
         return None
     return pendulum.from_format(match.group(1), "D MMMM YYYY", tz="Pacific/Auckland")
 
 def scrape_mbie():
-    # MBIE runs its own listing behind Imperva (browserless stealth gets through).
-    # Every item is an MBIE consultation, links are relative, and there is no
-    # start date — only a "Submissions due" close date.
     base = "https://www.mbie.govt.nz"
     html = browserless_fetch(f"{base}/have-your-say?type[open]=open")
     soup = BeautifulSoup(html, features="lxml")
@@ -218,16 +216,13 @@ def scrape_mbie():
     return out
 
 def parse_epa_due(text):
-    # Detail pages state "You have until 21 July 2026 to make a submission."
+    # "You have until 21 July 2026 to make a submission." generally appears in detail pages
     match = re.search(r"until\s+(\d{1,2}\s+[A-Za-z]+\s+\d{4})\s+to make a submission", text, re.I)
     if not match:
         return None
     return pendulum.from_format(match.group(1), "D MMMM YYYY", tz="Pacific/Auckland")
 
 def scrape_epa():
-    # EPA lists open consultations without close dates; the deadline lives on
-    # each detail page. Reuse a previously stored end date when we have one so we
-    # don't refetch every detail page on every run.
     base = "https://www.epa.govt.nz"
     html = browserless_fetch(f"{base}/public-consultations/open-consultations/")
     soup = BeautifulSoup(html, features="lxml")
@@ -237,11 +232,7 @@ def scrape_epa():
         if not link_tag:
             continue
         href = urljoin(base, link_tag.attrs.get("href"))
-        prev_end = previous_state.get(href, {}).get("end")
-        if prev_end:
-            end = pendulum.parse(prev_end)
-        else:
-            end = parse_epa_due(browserless_fetch(href))
+        end = parse_epa_due(browserless_fetch(href))
         if end is None:
             print(f"Could not find a close date for EPA consultation {href}, skipping")
             continue
@@ -265,10 +256,6 @@ def parse_cs_date(text):
     return pendulum.from_format(match.group(1), "D MMM YYYY", tz="Pacific/Auckland")
 
 def scrape_health():
-    # Ministry of Health runs Citizen Space. The finder lists open consultations
-    # but its inline date label flips between "Opened"/"Closes" depending on sort,
-    # so read the close (and open) dates off the detail page's date sidebar.
-    # Reuse stored dates to avoid refetching every detail page each run.
     base = "https://consult.health.govt.nz"
     html = browserless_fetch(f"{base}/consultation_finder/?st=open")
     soup = BeautifulSoup(html, features="lxml")
@@ -317,12 +304,12 @@ def parse_nz_date(text):
     return None
 
 def scrape_pharmac():
-    # Pharmac's listing gives the open date with a year but the close date
-    # without one ("Closes 26 Jun"), so infer the close year from the open date,
-    # rolling over when the close month precedes the open month. Detail pages
-    # supply og:title and og:image for the link card.
     base = "https://www.pharmac.govt.nz"
-    html = browserless_fetch(f"{base}/news-and-resources/consultations-and-decisions?type=Consultation&page=1&status=open")
+    html = browserless_fetch(
+        f"{base}/news-and-resources/consultations-and-decisions?type=Consultation&page=1&status=open",
+        timeout=90,
+        wait_fn="() => { const w = document.querySelector('.list-results-wrapper'); return w && !w.textContent.includes('Loading'); }",
+    )
     soup = BeautifulSoup(html, features="lxml")
     out = []
     results = soup.find(class_="list-results")
@@ -359,9 +346,6 @@ def scrape_pharmac():
     return out
 
 def scrape_doc():
-    # DOC lists open consultations as cards; the close date, when present, is
-    # embedded in the summary prose ("Submissions close 14 July 2026."). Some
-    # consultations have no date at all, so end stays None for those.
     base = "https://www.doc.govt.nz"
     html = browserless_fetch(f"{base}/get-involved/have-your-say/open-for-your-comment/")
     soup = BeautifulSoup(html, features="lxml")
@@ -376,8 +360,6 @@ def scrape_doc():
             continue
         body = card.find("p")
         description = body.get_text(strip=True) if body else ""
-        # Only treat a date as the close date when it sits in the same clause as
-        # "close" — avoids grabbing unrelated dates from the blurb.
         close_match = re.search(r"clos\w*\b[^.]*?(\d{1,2}\s+[A-Za-z]+\s+\d{4})", description, re.I)
         out.append({
             "link": urljoin(base, href),
@@ -390,7 +372,131 @@ def scrape_doc():
         })
     return out
 
-SCRAPERS = [scrape_govtnz, scrape_mbie, scrape_epa, scrape_health, scrape_pharmac, scrape_doc]
+def parse_fma_due(text):
+    match = re.search(r"have your say by\s+(\d{1,2}\s+[A-Za-z]+\s+\d{4})", text, re.I)
+    if not match:
+        match = re.search(r"clos\w*\b[^.]*?(\d{1,2}\s+[A-Za-z]+\s+\d{4})", text, re.I)
+    if not match:
+        return None
+    return parse_nz_date(match.group(1))
+
+def scrape_fma():
+    base = "https://www.fma.govt.nz"
+    listing = f"{base}/business/focus-areas/consultation/"
+    r = requests.post(
+        listing,
+        headers={
+            "User-Agent": USER_AGENT,
+            "X-Requested-With": "XMLHttpRequest",
+            "Referer": listing,
+            "Cookie": "fma-accept-cookies=accepted",
+        },
+        data=[("Sort", "DateTimeSort DESC"), ("ListTerms[]", "181")],
+        timeout=30,
+    )
+    r.raise_for_status()
+    soup = BeautifulSoup(r.text, features="lxml")
+    out = []
+    for item in soup.find_all("article", class_="search-results-semantic__result-item-content"):
+        header = item.find("header")
+        if not header:
+            continue
+        link_tag = header.find("a")
+        if not link_tag:
+            continue
+        body = item.find("section")
+        if body:
+            description = body.get_text(strip=True)
+        else:
+            description = ""
+        out.append({
+            "link": urljoin(base, link_tag.attrs.get("href")),
+            "title": link_tag.get_text(strip=True),
+            "agencies": "Financial Markets Authority",
+            "start": None,
+            "end": parse_fma_due(description),
+            "open": True,
+            "description": description,
+        })
+    return out
+
+def parse_mnz_due(text):
+    # Detail pages contain "This consultation closes: 5pm, 25 September 2026"
+    match = re.search(r"consultation closes:?\s*(?:[\d:.]+\s*[ap]m,?\s*)?(\d{1,2}\s+[A-Za-z]+\s+\d{4})", text, re.I)
+    if not match:
+        return None
+    return parse_nz_date(match.group(1))
+
+def scrape_mnz():
+    base = "https://www.maritimenz.govt.nz"
+    html = browserless_fetch(f"{base}/about-us/consultations/")
+    soup = BeautifulSoup(html, features="lxml")
+    out = []
+    seen = set()
+    for link_tag in soup.select(".side-menu__child-item a[href]"):
+        href_raw = link_tag.get("href", "")
+        low = href_raw.lower()
+        if "/about-us/consultations/" not in low:
+            continue
+        # Drop the index self-link and the closed-consultations archive.
+        if "closed-consultations" in low or low.rstrip("/").endswith("/about-us/consultations"):
+            continue
+        href = urljoin(base, href_raw)
+        if href in seen:
+            continue
+        seen.add(href)
+        prev_end = previous_state.get(href, {}).get("end")
+        if prev_end:
+            end = pendulum.parse(prev_end)
+        else:
+            end = parse_mnz_due(browserless_fetch(href))
+        out.append({
+            "link": href,
+            "title": link_tag.get_text(strip=True),
+            "agencies": "Maritime NZ",
+            "start": None,
+            "end": end,
+            "open": True,
+        })
+    return out
+
+def scrape_rbnz():
+    base = "https://consultations.rbnz.govt.nz"
+    html = browserless_fetch(f"{base}/consultation_finder/?st=open")
+    soup = BeautifulSoup(html, features="lxml")
+    out = []
+    for card in soup.find_all("li", attrs={"data-consultation-state": "open"}):
+        title_tag = card.select_one("h2 a")
+        if not title_tag:
+            continue
+        href = urljoin(base, title_tag.attrs.get("href"))
+        prev = previous_state.get(href, {})
+        if prev.get("end"):
+            start = pendulum.parse(prev["start"]) if prev.get("start") else None
+            end = pendulum.parse(prev["end"])
+        else:
+            detail = BeautifulSoup(browserless_fetch(href), features="lxml")
+            close_tag = detail.find(class_="cs-consultation-sidebar-primary-date")
+            open_tag = detail.find(class_="cs-consultation-sidebar-secondary-date")
+            end = parse_cs_date(close_tag.get_text()) if close_tag else None
+            start = parse_cs_date(open_tag.get_text()) if open_tag else None
+        if end is None:
+            print(f"Could not find a close date for RBNZ consultation {href}, skipping")
+            continue
+        body = card.find("div", class_="col-md-9")
+        summary = body.find("span") if body else None
+        out.append({
+            "link": href,
+            "title": title_tag.get_text(strip=True),
+            "agencies": "Reserve Bank of New Zealand",
+            "start": start,
+            "end": end,
+            "open": True,
+            "description": summary.get_text(strip=True) if summary else "",
+        })
+    return out
+
+SCRAPERS = [scrape_govtnz, scrape_mbie, scrape_epa, scrape_health, scrape_pharmac, scrape_doc, scrape_fma, scrape_mnz, scrape_rbnz]
 
 post_to_bluesky = os.environ.get("POST_TO_BLUESKY", False)
 client = None
@@ -407,7 +513,6 @@ for scraper in SCRAPERS:
     try:
         scraped = scraper()
     except Exception as e:
-        # Don't let one site's outage drop everything else's notifications.
         print(f"Scraper {scraper.__name__} failed: {e}")
         continue
     for consultation in scraped:
@@ -432,10 +537,15 @@ for consultation in consultations:
     notified_1week = as_bool(prev_item.get("notified_1week"))
     notified_1day = as_bool(prev_item.get("notified_1day"))
 
+    # We assume if the close date is now longer than the close date we last recorded
+    # that it means a consultation's deadline has been extended
+    prev_end = prev_item.get("end")
+    if prev_end and end and end > pendulum.parse(prev_end):
+        notified_1week = False
+        notified_1day = False
+
     if consult_open:
-        # Some sources (DOC) don't always publish a close date — those can only
-        # get the initial "now open" notice, never the closing-soon reminders.
-        days_left = (end - pendulum.now("Pacific/Auckland")).in_days() if end else None
+        days_left = (end - pendulum.now("Pacific/Auckland")).total_days() if end else None
         text = None
         if days_left is not None and 0 < days_left <= 1 and not notified_1day:
             text = f"The following consultation from {agencies} closes for submissions tomorrow\n\n{title}"
@@ -447,9 +557,8 @@ for consultation in consultations:
         posted = True
         if text:
             image_url, og_title, og_description = fetch_og_meta(href)
-            # Fall back to the listing blurb when the page has no OG description.
+            # Fall back to the listing blurb when the page has no OpenGraph description.
             card_description = og_description or consultation.get("description", "")
-            # Tidy whitespace and keep the card description to a sane length.
             card_description = re.sub(r"\s+", " ", card_description).strip()
             if len(card_description) > 300:
                 card_description = card_description[:297].rstrip() + "…"
