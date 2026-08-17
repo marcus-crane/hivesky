@@ -51,6 +51,8 @@ jobs:
           BROWSERLESS_API_TOKEN: ${{ secrets.BROWSERLESS_API_TOKEN }}
           BROWSERLESS_URL: http://localhost:3000/content
           POST_TO_BLUESKY: True
+          PUSHOVER_TOKEN: ${{ secrets.PUSHOVER_TOKEN }}
+          PUSHOVER_USER: ${{ secrets.PUSHOVER_USER }}
       - name: Commit history changes
         # Even if we crash out, we can persist our state so that the next run
         # will catch anything that fell over

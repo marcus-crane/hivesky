@@ -98,6 +98,34 @@ def fetch_page():
     return browserless_fetch(DONATIONS_URL)
 
 
+def pushover_notify(donation):
+    token = os.environ.get("PUSHOVER_TOKEN")
+    user = os.environ.get("PUSHOVER_USER")
+    if not token or not user:
+        print("Skipping Pushover ping as PUSHOVER_TOKEN/PUSHOVER_USER are unset")
+        return False
+
+    message = f"{donation.party} filed an amended return for the {donation.amount} donation from {donation.donor_name}."
+    try:
+        r = requests.post(
+            "https://api.pushover.net/1/messages.json",
+            data={
+                "token": token,
+                "user": user,
+                "title": "Amended donation return",
+                "message": message,
+                "url": donation.pdf_url,
+                "url_title": "Open the filing",
+            },
+            timeout=30,
+        )
+        r.raise_for_status()
+    except requests.RequestException as e:
+        print(f"Failed to send Pushover ping for {donation.pdf_url}: {e}")
+        return False
+    return True
+
+
 def cell_lines(td):
     # Convert <br> to newlines so get_text honours them as line breaks.
     for br in td.find_all("br"):
@@ -323,6 +351,12 @@ if __name__ == "__main__":
     for donation in donations:
         if donation.pdf_url in seen:
             print(f"Skipped {donation.pdf_url} as already syndicated")
+            continue
+
+        if "amended" in donation.pdf_url.lower():
+            print(f"Amended return needs a manual post: {donation.pdf_url}")
+            if pushover_notify(donation):
+                save_history(history, donation)
             continue
 
         text = build_post_text(donation)
