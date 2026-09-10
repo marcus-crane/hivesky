@@ -3,36 +3,15 @@ import os
 import re
 import sys
 import time
-from io import BytesIO
 from urllib.parse import urljoin
 
 import requests
 from atproto import Client, models
 from bs4 import BeautifulSoup
-from PIL import Image
-
-BSKY_BLOB_LIMIT = 1_000_000
 
 DONATIONS_URL = "https://elections.nz/democracy-in-nz/political-parties-in-new-zealand/donations-exceeding-20000"
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-
-USER_AGENT = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-
-PARTY_SITES = {
-    "ACT New Zealand": "https://www.act.org.nz",
-    "New Zealand First Party": "https://www.nzfirst.nz",
-    "The Green Party of Aotearoa New Zealand": "https://www.greens.org.nz",
-    "Te Pāti Māori": "https://www.maoriparty.org.nz",
-    "New Zealand Labour Party": "https://www.labour.org.nz",
-    "The New Zealand National Party": "https://www.national.org.nz",
-    "Opportunity Party": "https://www.opportunity.org.nz/",
-    "The Opportunities Party": "https://www.opportunity.org.nz/",
-}
-
-# These party websites don't have og:image banners sadly
-PARTY_BANNERS = {
-    "ACT New Zealand": "https://framerusercontent.com/images/WiUfeXvLaYKyPDOWzkFn5Wm6B8.png",
-}
+MAX_POSTS_PER_RUN = 3
 
 
 class Donation:
@@ -233,61 +212,6 @@ def published_urls(history):
     return {row["url"] for row in history}
 
 
-def party_site(party):
-    return PARTY_SITES.get(party.strip())
-
-
-def fetch_og_image(url):
-    try:
-        html = browserless_fetch(url)
-    except requests.RequestException as e:
-        print(f"Failed to fetch OG image for {url}: {e}")
-        return None
-
-    soup = BeautifulSoup(html, "html.parser")
-    tag = soup.find("meta", attrs={"property": "og:image"})
-    if not tag:
-        return None
-    content = tag.get("content")
-    if not content:
-        return None
-    return urljoin(url, content.strip())
-
-
-def fetch_image_bytes(url):
-    try:
-        r = requests.get(url, headers={"User-Agent": USER_AGENT}, timeout=30)
-        r.raise_for_status()
-        return r.content
-    except requests.RequestException as e:
-        print(f"Failed to fetch image {url}: {e}")
-        return None
-
-
-def fit_thumb(img_bytes):
-    # Bluesky rejects embed thumbs over 1MB. Re-encode as progressively smaller
-    # JPEGs until it fits, or give up (caller drops the thumb).
-    if len(img_bytes) <= BSKY_BLOB_LIMIT:
-        return img_bytes
-    try:
-        img = Image.open(BytesIO(img_bytes))
-    except Exception as e:
-        print(f"Could not open image for resizing: {e}")
-        return None
-    if img.mode != "RGB":
-        img = img.convert("RGB")
-    for max_dim, quality in [(1600, 85), (1200, 80), (1000, 75), (800, 70), (600, 65)]:
-        copy = img.copy()
-        copy.thumbnail((max_dim, max_dim))
-        buf = BytesIO()
-        copy.save(buf, format="JPEG", quality=quality, optimize=True)
-        data = buf.getvalue()
-        if len(data) <= BSKY_BLOB_LIMIT:
-            return data
-    print("Could not shrink image below Bluesky blob limit")
-    return None
-
-
 def build_post_text(donation):
     text = f"{donation.party} received a {donation.amount} donation from {donation.donor_name}"
     if donation.donation_date:
@@ -344,11 +268,12 @@ if __name__ == "__main__":
             os.environ.get("BLUESKY_PASSWORD", False),
         )
 
-    # Cache og:image lookups across the run so we hit each party homepage at
-    # most once.
-    og_cache = {}
-
+    posted = 0
     for donation in donations:
+        if posted >= MAX_POSTS_PER_RUN:
+            print(f"Stopping after {MAX_POSTS_PER_RUN} posts, the rest will go out next run")
+            break
+
         if donation.pdf_url in seen:
             print(f"Skipped {donation.pdf_url} as already syndicated")
             continue
@@ -361,51 +286,12 @@ if __name__ == "__main__":
 
         text = build_post_text(donation)
         text, facets = build_footer_facets(text, donation)
-        site = party_site(donation.party)
-
-        embed_image_url = None
-        if site:
-            if site not in og_cache:
-                og_cache[site] = fetch_og_image(site)
-            embed_image_url = og_cache[site]
-        if not embed_image_url:
-            embed_image_url = PARTY_BANNERS.get(donation.party.strip())
-
-        alt_text = f"The social banner associated with the party website for {donation.party}"
-
-        embed = None
-        if post_to_bluesky and embed_image_url:
-            img_data = fetch_image_bytes(embed_image_url)
-            if img_data:
-                img_data = fit_thumb(img_data)
-            if img_data:
-                # Tell Bluesky the image's true aspect ratio so it doesn't
-                # letterbox banners into the default tall slot.
-                try:
-                    with Image.open(BytesIO(img_data)) as probe:
-                        aspect = models.AppBskyEmbedDefs.AspectRatio(
-                            width=probe.width, height=probe.height
-                        )
-                except Exception:
-                    aspect = None
-                blob = client.upload_blob(img_data).blob
-                embed = models.AppBskyEmbedImages.Main(
-                    images=[
-                        models.AppBskyEmbedImages.Image(
-                            image=blob,
-                            alt=alt_text,
-                            aspect_ratio=aspect,
-                        )
-                    ]
-                )
 
         if post_to_bluesky:
             try:
-                if embed:
-                    client.send_post(text, embed=embed, facets=facets)
-                else:
-                    client.send_post(text, facets=facets)
+                client.send_post(text, facets=facets)
                 save_history(history, donation)
+                posted += 1
                 print(f"Successfully posted {donation.pdf_url}")
                 # Avoid spamming followers and any Bluesky rate limits.
                 time.sleep(5)
@@ -414,11 +300,5 @@ if __name__ == "__main__":
                 continue
         else:
             print(text)
-            print("----")
-            if embed_image_url:
-                print(f"Image: {embed_image_url}")
-                print(f"Alt: {alt_text}")
-            else:
-                print("(no embed)")
-            print("----")
             save_history(history, donation)
+            posted += 1
