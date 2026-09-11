@@ -43,7 +43,7 @@ jobs:
           done
           echo "Browserless did not become ready in time"
           exit 1
-      - name: Syndicate Beehive publications to Bluesky
+      - name: Syndicate election donations to Bluesky
         run: python electiondonations/bot.py
         env:
           BLUESKY_USERNAME: ${{ secrets.ELECTIONDONATIONS_BLUESKY_USERNAME }}
