@@ -1,0 +1,57 @@
+name: "Election donations debug"
+on:
+  workflow_dispatch:
+env:
+  PYTHONUNBUFFERED: 1
+
+jobs:
+  debug:
+    name: Election Donation Debug
+    timeout-minutes: 5
+    runs-on: ubuntu-latest
+
+    services:
+      browserless:
+        image: ghcr.io/browserless/chromium:latest
+        ports:
+          - 3000:3000
+        env:
+          TOKEN: ${{ secrets.BROWSERLESS_API_TOKEN }}
+
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install Python dependencies
+        run: pip install -r requirements.txt
+      - name: Wait for Browserless
+        run: |
+          for i in {1..30}; do
+            if curl -sf "http://localhost:3000/active?token=${{ secrets.BROWSERLESS_API_TOKEN }}" > /dev/null; then
+              echo "Browserless ready after ${i} attempt(s)"
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "Browserless did not become ready in time"
+          exit 1
+      - name: Drop the latest history entry so it looks like a new donation
+        run: |
+          echo "Forgetting: $(tail -n 1 electiondonations/history.csv)"
+          sed -i '$d' electiondonations/history.csv
+      - name: Post election donations to debug.utf9k.net
+        run: python electiondonations/bot.py
+        env:
+          BLUESKY_USERNAME: ${{ secrets.DEBUG_BLUESKY_USERNAME }}
+          BLUESKY_PASSWORD: ${{ secrets.DEBUG_BLUESKY_PASSWORD }}
+          BROWSERLESS_API_TOKEN: ${{ secrets.BROWSERLESS_API_TOKEN }}
+          BROWSERLESS_URL: http://localhost:3000/content
+          POST_TO_BLUESKY: True
+      - name: Show what the bot would have committed
+        run: git --no-pager diff
